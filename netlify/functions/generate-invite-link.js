@@ -23,6 +23,7 @@ exports.handler = async (event) => {
     // Verify the caller is a real logged-in admin before doing anything privileged.
     const callerClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { autoRefreshToken: false, persistSession: false },
     });
 
     const { data: userData, error: userErr } = await callerClient.auth.getUser(token);
@@ -47,7 +48,10 @@ exports.handler = async (event) => {
     }
 
     // This client uses the service role key — full admin power, server-side only, never sent to the browser.
-    const adminClient = createClient(supabaseUrl, serviceKey);
+    // auth options are set explicitly so Supabase doesn't mistake this server call for browser usage.
+    const adminClient = createClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
     const { data, error } = await adminClient.auth.admin.generateLink({
       type: "magiclink",
       email,
@@ -55,7 +59,7 @@ exports.handler = async (event) => {
     });
 
     if (error) {
-      return { statusCode: 500, body: JSON.stringify({ error: error.message }) };
+      return { statusCode: 500, body: JSON.stringify({ error: error.message || "Supabase rejected the request" }) };
     }
 
     return {
@@ -63,6 +67,8 @@ exports.handler = async (event) => {
       body: JSON.stringify({ link: data.properties.action_link }),
     };
   } catch (err) {
-    return { statusCode: 500, body: JSON.stringify({ error: err.message || "Unexpected error" }) };
+    console.error("generate-invite-link error:", err);
+    const message = (err && (err.message || err.toString && err.toString())) || "Unexpected server error";
+    return { statusCode: 500, body: JSON.stringify({ error: message }) };
   }
 };
