@@ -819,9 +819,6 @@ function SignIn() {
     </div>
   );
 }
-    </div>
-  );
-}
 
 /* ---------- App shell ---------- */
 
