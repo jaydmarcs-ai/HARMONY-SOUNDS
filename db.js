@@ -226,18 +226,18 @@ export const profilesApi = {
   async add({ name, email, role }) {
     return supabase.from("profiles").insert({ name, email, role, status: "invited" }).select().single();
   },
-  async generateLink(email) {
+  async adminResetPassword(email, newPassword) {
     const { data: sessionData } = await supabase.auth.getSession();
     const token = sessionData?.session?.access_token;
     if (!token) return { error: { message: "Not signed in" } };
-    const res = await fetch("/.netlify/functions/generate-invite-link", {
+    const res = await fetch("/.netlify/functions/reset-password", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email, newPassword }),
     });
     const json = await res.json();
-    if (!res.ok) return { error: { message: json.error || "Couldn't generate the link" } };
-    return { link: json.link };
+    if (!res.ok) return { error: { message: json.error || "Couldn't reset the password" } };
+    return { success: true };
   },
   async update(id, patch) { return supabase.from("profiles").update(patch).eq("id", id); },
   async remove(id) { return supabase.from("profiles").delete().eq("id", id); },
