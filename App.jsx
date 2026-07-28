@@ -68,28 +68,17 @@ function getLocation() {
 }
 
 async function analyzeOdometerPhoto(dataUrl) {
-  const base64 = dataUrl.split(",")[1];
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) throw new Error("Not signed in");
+  const response = await fetch("/.netlify/functions/analyze-odometer", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 300,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
-          {
-            type: "text",
-            text: "This is a photo of a vehicle odometer for a fleet driver's log. Respond ONLY with compact JSON and nothing else: {\"clear\": boolean, \"reason\": string, \"reading\": number_or_null}. Set \"clear\" to false if the image is blurry, too dark, obstructed, at a bad angle, or the digits are not confidently readable — in that case \"reading\" must be null and \"reason\" briefly explains why in plain words. If clear is true, \"reading\" must be the odometer's numeric mileage reading as an integer, digits only.",
-          },
-        ],
-      }],
-    }),
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ photo: dataUrl }),
   });
-  const data = await response.json();
-  const text = (data.content || []).map((b) => b.text || "").join("");
-  return JSON.parse(text.replace(/```json|```/g, "").trim());
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error || "Couldn't check the photo");
+  return json;
 }
 
 /* ---------- small UI atoms ---------- */
@@ -454,84 +443,47 @@ function Quotes({ quotes, clients, events }) {
 
 function Team({ profiles, currentProfile }) {
   const [editing, setEditing] = useState(null);
-  const [linkModal, setLinkModal] = useState(null); // { name, email, link } or { name, email, error }
-  const [sending, setSending] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const save = async (u) => {
-    if (u.id) { await profilesApi.update(u.id, { name: u.name, role: u.role }); setEditing(null); return; }
-    setSending(true);
-    const { data, error } = await profilesApi.add(u);
-    if (error) { setSending(false); alert("Couldn't add them: " + error.message); return; }
-    const { link, error: linkError } = await profilesApi.generateLink(u.email);
-    setSending(false);
+    setSaving(true);
+    if (u.id) {
+      await profilesApi.update(u.id, { name: u.name, role: u.role });
+    } else {
+      // Pre-set a role for someone before they've registered — the trigger links it up by email when they sign up.
+      await profilesApi.add(u);
+    }
+    setSaving(false);
     setEditing(null);
-    setCopied(false);
-    setLinkModal({ name: data.name, email: data.email, link, error: linkError?.message });
   };
   const remove = async (id) => { await profilesApi.remove(id); setEditing(null); };
-  const getLink = async (name, email) => {
-    setCopied(false);
-    const { link, error } = await profilesApi.generateLink(email);
-    setLinkModal({ name, email, link, error: error?.message });
-  };
-  const copyLink = () => { navigator.clipboard.writeText(linkModal.link); setCopied(true); };
-  const whatsappShare = () => {
-    const text = `Hi ${linkModal.name}, here's your sign-in link for Harmony Sounds: ${linkModal.link}`;
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
-  };
 
   return (
     <div>
-      <div className="hs-toolbar"><span className="hs-muted">{profiles.length} team member(s)</span><button className="hs-btn primary" onClick={() => setEditing({ name: "", email: "", role: "staff" })}><Plus size={16} /> Add Team Member</button></div>
-      <p className="hs-muted" style={{ marginTop: -10, marginBottom: 16 }}>Add someone, then generate their sign-in link and send it yourself — WhatsApp, email, however's easiest. No email server needed.</p>
+      <div className="hs-toolbar"><span className="hs-muted">{profiles.length} team member(s)</span><button className="hs-btn primary" onClick={() => setEditing({ name: "", email: "", role: "staff" })}><Plus size={16} /> Pre-set a Role</button></div>
+      <p className="hs-muted" style={{ marginTop: -10, marginBottom: 16 }}>Everyone creates their own account on the sign-in page with their email and a password. New sign-ups land as Staff by default — change their role here once they're in. You can also pre-set someone's role before they sign up, using their email.</p>
       <div className="hs-tag-grid">
         {profiles.map((u) => {
           const Role = ROLES.find((r) => r.key === u.role) || ROLES[1];
           return (
-            <div key={u.id} className="hs-client-card">
-              <div onClick={() => setEditing(u)}>
-                <strong>{u.name}{u.id === currentProfile.id ? " (you)" : ""}</strong>
-                <div className="hs-muted" style={{ display: "flex", alignItems: "center", gap: 6 }}><Role.icon size={13} /> {Role.label}</div>
-                <div className="hs-muted hs-mono">{u.email}</div>
-              </div>
-              {u.id !== currentProfile.id && (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-                  {u.status === "invited" && <span className="hs-badge warn">Not signed in yet</span>}
-                  <button className="hs-btn small" onClick={(e) => { e.stopPropagation(); getLink(u.name, u.email); }}><Mail size={12} /> Get Sign-In Link</button>
-                </div>
-              )}
+            <div key={u.id} className="hs-client-card" onClick={() => setEditing(u)}>
+              <strong>{u.name}{u.id === currentProfile.id ? " (you)" : ""}</strong>
+              <div className="hs-muted" style={{ display: "flex", alignItems: "center", gap: 6 }}><Role.icon size={13} /> {Role.label}</div>
+              <div className="hs-muted hs-mono">{u.email}</div>
+              {u.status === "invited" && <span className="hs-badge warn" style={{ width: "fit-content", marginTop: 4 }}>Not registered yet</span>}
             </div>
           );
         })}
       </div>
       {editing && (
-        <Modal title={editing.id ? "Edit Person" : "Add Team Member"} onClose={() => setEditing(null)}>
+        <Modal title={editing.id ? "Edit Person" : "Pre-set a Role"} onClose={() => setEditing(null)}>
           <Field label="Name"><input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></Field>
           {!editing.id && <Field label="Email"><input type="email" value={editing.email || ""} onChange={(e) => setEditing({ ...editing, email: e.target.value })} placeholder="name@example.com" /></Field>}
           <Field label="Role"><select value={editing.role} onChange={(e) => setEditing({ ...editing, role: e.target.value })}>{ROLES.filter((r) => r.key !== "admin" || editing.role === "admin").map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}</select></Field>
           <div className="hs-modal-actions">
             {editing.id && editing.id !== currentProfile.id && <button className="hs-btn danger" onClick={() => remove(editing.id)}>Remove</button>}
-            <button className="hs-btn primary" onClick={() => save(editing)} disabled={!editing.name || (!editing.id && !editing.email) || sending}>{sending ? "Adding..." : editing.id ? "Save" : "Add & Get Link"}</button>
+            <button className="hs-btn primary" onClick={() => save(editing)} disabled={!editing.name || (!editing.id && !editing.email) || saving}>{saving ? "Saving..." : "Save"}</button>
           </div>
-        </Modal>
-      )}
-      {linkModal && (
-        <Modal title="Sign-In Link" onClose={() => setLinkModal(null)}>
-          {linkModal.link ? (
-            <>
-              <p className="hs-muted">This link signs {linkModal.name} straight in as their {ROLES.find((r) => r.key === (profiles.find((p) => p.email === linkModal.email)?.role))?.label || "assigned role"}. Send it to them any way you like — it only works once and expires after a while, so send it fresh each time.</p>
-              <div className="hs-field" style={{ marginTop: 10 }}>
-                <textarea readOnly rows={3} value={linkModal.link} onClick={(e) => e.target.select()} style={{ fontFamily: "monospace", fontSize: 12 }} />
-              </div>
-              <div className="hs-modal-actions" style={{ justifyContent: "flex-start" }}>
-                <button className="hs-btn primary" onClick={copyLink}>{copied ? "Copied!" : "Copy Link"}</button>
-                <button className="hs-btn" onClick={whatsappShare}>Send via WhatsApp</button>
-              </div>
-            </>
-          ) : (
-            <p className="hs-danger-text">Couldn't generate the link: {linkModal.error}</p>
-          )}
         </Modal>
       )}
     </div>
@@ -811,36 +763,62 @@ function DriversLogAdmin({ journeys, profiles, fleet, events }) {
 /* ---------- auth ---------- */
 
 function SignIn() {
+  const [mode, setMode] = useState("login"); // login | register
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [sent, setSent] = useState(false);
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
 
-  const send = async () => {
+  const submit = async () => {
     setSending(true); setError("");
-    const { error: err } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
-    setSending(false);
-    if (err) setError(err.message); else setSent(true);
+    if (mode === "register") {
+      const { error: err } = await supabase.auth.signUp({
+        email, password,
+        options: { data: { name } },
+      });
+      setSending(false);
+      if (err) setError(err.message);
+      // on success, onAuthStateChange in App picks up the new session automatically
+    } else {
+      const { error: err } = await supabase.auth.signInWithPassword({ email, password });
+      setSending(false);
+      if (err) setError(err.message);
+    }
   };
 
   return (
     <div className="hs-login">
       <div className="hs-login-card">
         <div className="hs-logo"><Speaker size={22} />Harmony Sounds</div>
-        {sent ? (
-          <>
-            <p className="hs-muted">Check <strong>{email}</strong> for a sign-in link. Open it on this device to get in.</p>
-            <button className="hs-btn" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} onClick={() => setSent(false)}>Use a different email</button>
-          </>
-        ) : (
-          <>
-            <p className="hs-muted" style={{ marginTop: -6, marginBottom: 18 }}>Enter your email — if you're the first person here, you'll be set up as admin. Otherwise you'll need to have been invited first.</p>
-            <Field label="Email"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" /></Field>
-            {error && <p className="hs-danger-text">{error}</p>}
-            <button className="hs-btn primary" style={{ width: "100%", justifyContent: "center", marginTop: 6 }} disabled={!email || sending} onClick={send}>{sending ? "Sending..." : "Send Sign-In Link"}</button>
-          </>
-        )}
+        <p className="hs-muted" style={{ marginTop: -6, marginBottom: 18 }}>
+          {mode === "register"
+            ? "Create your account — if you're the first person here, you'll be set up as admin. Otherwise your role is set by an admin afterward."
+            : "Log in with your email and password."}
+        </p>
+        {mode === "register" && <Field label="Your Name"><input value={name} onChange={(e) => setName(e.target.value)} /></Field>}
+        <Field label="Email"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" /></Field>
+        <Field label="Password"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={mode === "register" ? "At least 6 characters" : ""} /></Field>
+        {error && <p className="hs-danger-text">{error}</p>}
+        <button
+          className="hs-btn primary"
+          style={{ width: "100%", justifyContent: "center", marginTop: 6 }}
+          disabled={!email || !password || (mode === "register" && !name) || sending}
+          onClick={submit}
+        >
+          {sending ? "Please wait..." : mode === "register" ? "Create Account" : "Log In"}
+        </button>
+        <button
+          className="hs-btn"
+          style={{ width: "100%", justifyContent: "center", marginTop: 8 }}
+          onClick={() => { setMode(mode === "register" ? "login" : "register"); setError(""); }}
+        >
+          {mode === "register" ? "Already have an account? Log in" : "New here? Create an account"}
+        </button>
       </div>
+    </div>
+  );
+}
     </div>
   );
 }
